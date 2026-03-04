@@ -1,0 +1,723 @@
+---
+title: "Additional Statistical Analyses (Revision)"
+author:
+  name: Takeshi Kondo
+  orcid: 0000-0002-3307-671X
+editor:
+  render-on-save: true
+format:
+  html:
+    code-fold: true
+  docx:
+    toc: false
+---
+
+# Additional Analyses for Peer Review Response
+
+These analyses address specific reviewer and editor comments from the JMIR Medical Education review (Manuscript #90064).
+
+```{r}
+#| label: setup
+#| message: false
+#| warning: false
+
+if (is.null(renv::project())) renv::load()
+
+if (!requireNamespace("pacman", quietly = TRUE))
+  install.packages("pacman", quietly = TRUE)
+pacman::p_load(
+  tidyr,
+  dplyr,
+  ggplot2,
+  flextable,
+  rio,
+  here,
+  purrr,
+  svglite,
+  irr
+)
+
+# Format p-values per JMIR guidelines:
+# - no leading zero (.142 not 0.142)
+# - p < .001 → "<.001"
+# - p >= 0.9995 (rounds to 1.000) → ">.99"
+fmt_p <- function(p) {
+  ifelse(p < 0.001, "<.001",
+    ifelse(p >= 0.9995, ">.99",
+      sub("^0\\.", ".", sprintf("%.3f", p))
+    )
+  )
+}
+
+tidy_data <- rio::import(here("data", "quantitative", "data.csv"))
+```
+
+## 1. Missing Data Assessment (Editor 9)
+
+```{r}
+#| label: tbl-missing-data
+#| tbl-cap: "Missing Data Assessment by Variable"
+
+completeness <- tidy_data |>
+  summarise(across(everything(), ~ sum(is.na(.)))) |>
+  pivot_longer(everything(), names_to = "variable", values_to = "n_missing") |>
+  mutate(
+    n_total = nrow(tidy_data),
+    pct_complete = round(100 * (1 - n_missing / n_total), 1)
+  )
+
+completeness |>
+  rio::export(here("result", "quantitative", "missing_data_assessment.csv"))
+
+completeness |>
+  flextable() |>
+  set_header_labels(
+    variable = "Variable",
+    n_missing = "N Missing",
+    n_total = "N Total",
+    pct_complete = "% Complete"
+  ) |>
+  align(align = "center", part = "all") |>
+  autofit()
+```
+
+```{r}
+#| label: tbl-record-completeness
+#| tbl-cap: "Record-Level Completeness"
+
+record_completeness <- tidy_data |>
+  group_by(record_id) |>
+  summarise(
+    n_rows = n(),
+    expected_rows = 20,
+    complete = n_rows == 20,
+    any_na_value = any(is.na(value)),
+    .groups = "drop"
+  )
+
+record_summary <- record_completeness |>
+  summarise(
+    total_records = n(),
+    complete_records = sum(complete),
+    records_with_na = sum(any_na_value),
+    pct_complete = round(100 * mean(complete), 1)
+  )
+
+record_completeness |>
+  rio::export(here("result", "quantitative", "record_completeness.csv"))
+
+record_summary |>
+  flextable() |>
+  set_header_labels(
+    total_records = "Total Records",
+    complete_records = "Complete Records",
+    records_with_na = "Records with NA",
+    pct_complete = "% Complete"
+  ) |>
+  align(align = "center", part = "all") |>
+  autofit()
+```
+
+All `r nrow(tidy_data)` observations across `r length(unique(tidy_data$record_id))` records are complete with no missing values in any variable. Each record contains the expected 20 rows (5 items x 2 persons x 2 assessor types). No imputation procedures or MCAR testing were necessary.
+
+## 2. Student Log Characteristics (Reviewers F5, G1, G2)
+
+### 2.1 Descriptive Statistics
+
+```{r}
+#| label: tbl-log-characteristics
+#| tbl-cap: "Descriptive Statistics of Student Clinical Log Length (Characters)"
+
+log_data <- tidy_data |>
+  distinct(record_id, .keep_all = TRUE)
+
+log_desc <- log_data |>
+  summarise(
+    n = n(),
+    mean = round(mean(log_letter_count), 1),
+    sd = round(sd(log_letter_count), 1),
+    median = median(log_letter_count),
+    q1 = quantile(log_letter_count, 0.25),
+    q3 = quantile(log_letter_count, 0.75),
+    iqr = IQR(log_letter_count),
+    min = min(log_letter_count),
+    max = max(log_letter_count)
+  )
+
+log_desc |>
+  rio::export(here("result", "quantitative", "log_characteristics.csv"))
+
+log_desc |>
+  flextable() |>
+  set_header_labels(
+    n = "N", mean = "Mean", sd = "SD", median = "Median",
+    q1 = "Q1", q3 = "Q3", iqr = "IQR", min = "Min", max = "Max"
+  ) |>
+  align(align = "center", part = "all") |>
+  autofit()
+```
+
+### 2.2 Distribution
+
+```{r}
+#| label: fig-log-length-dist
+#| fig-cap: "Distribution of Student Clinical Log Length"
+
+plot_log <- log_data |>
+  ggplot(aes(x = log_letter_count)) +
+  geom_histogram(bins = 30, fill = "steelblue", alpha = 0.7) +
+  labs(x = "Log Length (characters)", y = "Frequency") +
+  theme_minimal()
+
+plot_log |>
+  ggsave(
+    filename = here("result", "quantitative", "fig_log_length_distribution.svg"),
+    plot = _, width = 10, height = 6
+  )
+
+plot_log
+```
+
+### 2.3 Relationship Between Log Length and Scores
+
+```{r}
+#| label: tbl-log-score-by-person
+#| tbl-cap: "Spearman Correlation Between Log Length and Rubric Scores by Feedback Source"
+
+log_score_data <- tidy_data |>
+  filter(person %in% c("ai", "supervisor")) |>
+  select(record_id, assessor_type, item, person, value, log_letter_count)
+
+log_score_by_person <- log_score_data |>
+  group_by(person, item) |>
+  summarise(
+    n = n(),
+    spearman_rho = cor(log_letter_count, value, method = "spearman", use = "complete.obs"),
+    p_value = suppressWarnings(cor.test(log_letter_count, value, method = "spearman")$p.value),
+    .groups = "drop"
+  ) |>
+  mutate(
+    n_tests = n(),
+    bonferroni_p = pmin(p_value * n_tests, 1)
+  )
+
+log_score_by_person |>
+  rio::export(here("result", "quantitative", "log_length_score_correlation.csv"))
+
+log_score_by_person |>
+  transmute(
+    Source = case_when(
+      person == "ai" ~ "AI",
+      person == "supervisor" ~ "Supervisor",
+      TRUE ~ person
+    ),
+    Item = case_when(
+      item == "accurate" ~ "Accurate",
+      item == "clear.direction" ~ "Clear Direction",
+      item == "criteria.based" ~ "Criteria Based",
+      item == "prioritization" ~ "Prioritization",
+      item == "supportive" ~ "Supportive",
+      TRUE ~ item
+    ),
+    N = n,
+    `Spearman rho` = sprintf("%.3f", spearman_rho),
+    `p (uncorrected)` = fmt_p(p_value),
+    `p (Bonferroni)` = fmt_p(bonferroni_p)
+  ) |>
+  flextable() |>
+  merge_v(j = "Source") |>
+  valign(j = "Source", valign = "top") |>
+  align(align = "center", part = "all") |>
+  autofit()
+```
+
+```{r}
+#| label: fig-log-score-by-person
+#| fig-cap: "Relationship Between Log Length and Rubric Scores by Feedback Source"
+
+plot_log_score <- log_score_data |>
+  mutate(
+    item = case_when(
+      item == "accurate" ~ "Accurate",
+      item == "clear.direction" ~ "Clear Direction",
+      item == "criteria.based" ~ "Criteria Based",
+      item == "prioritization" ~ "Prioritization",
+      item == "supportive" ~ "Supportive",
+      TRUE ~ item
+    ),
+    person = case_when(
+      person == "ai" ~ "AI",
+      person == "supervisor" ~ "Supervisor",
+      TRUE ~ person
+    )
+  ) |>
+  ggplot(aes(x = log_letter_count, y = value, color = person)) +
+  geom_jitter(alpha = 0.3, height = 0.15, width = 0) +
+  geom_smooth(method = "loess", se = TRUE) +
+  facet_wrap(~ item) +
+  labs(x = "Log Length (characters)", y = "Rubric Score", color = "Source") +
+  theme_minimal()
+
+plot_log_score |>
+  ggsave(
+    filename = here("result", "quantitative", "fig_log_length_vs_score.svg"),
+    plot = _, width = 12, height = 8
+  )
+
+plot_log_score
+```
+
+Spearman correlations between log length and rubric scores were computed separately for AI-generated and supervisor-provided feedback across all five rubric items (10 tests total, Bonferroni-corrected). No correlation reached statistical significance after correction (all Bonferroni-adjusted p > .05). The largest observed coefficient was rho = .137 (Supervisor, Clear Direction), which would explain less than 2% of variance. These results indicate that variation in student log length did not systematically influence rubric scores for either AI or supervisor feedback.
+
+### 2.4 Relationship Between Log Length and Score Differences
+
+```{r}
+#| label: tbl-log-score-correlation
+#| tbl-cap: "Spearman Correlation Between Log Length and Score Difference (AI - Supervisor)"
+
+score_diff_data <- tidy_data |>
+  filter(person %in% c("ai", "supervisor")) |>
+  select(record_id, assessor_type, item, person, value, log_letter_count) |>
+  pivot_wider(names_from = person, values_from = value) |>
+  mutate(diff = ai - supervisor)
+
+log_score_corr <- score_diff_data |>
+  group_by(item) |>
+  summarise(
+    n = n(),
+    spearman_rho = cor(log_letter_count, diff, method = "spearman", use = "complete.obs"),
+    p_value = suppressWarnings(cor.test(log_letter_count, diff, method = "spearman")$p.value),
+    .groups = "drop"
+  ) |>
+  mutate(
+    n_tests = n(),
+    bonferroni_p = pmin(p_value * n_tests, 1)
+  )
+
+log_score_corr |>
+  rio::export(here("result", "quantitative", "log_score_difference_correlation.csv"))
+
+log_score_corr |>
+  transmute(
+    Item = case_when(
+      item == "accurate" ~ "Accurate",
+      item == "clear.direction" ~ "Clear Direction",
+      item == "criteria.based" ~ "Criteria Based",
+      item == "prioritization" ~ "Prioritization",
+      item == "supportive" ~ "Supportive",
+      TRUE ~ item
+    ),
+    N = n,
+    `Spearman rho` = sprintf("%.3f", spearman_rho),
+    `p (uncorrected)` = fmt_p(p_value),
+    `p (Bonferroni)` = fmt_p(bonferroni_p)
+  ) |>
+  flextable() |>
+  align(align = "center", part = "all") |>
+  autofit()
+```
+
+```{r}
+#| label: fig-log-score-diff
+#| fig-cap: "Relationship Between Log Length and Score Difference (AI - Supervisor)"
+
+plot_scatter <- score_diff_data |>
+  mutate(
+    item = case_when(
+      item == "accurate" ~ "Accurate",
+      item == "clear.direction" ~ "Clear Direction",
+      item == "criteria.based" ~ "Criteria Based",
+      item == "prioritization" ~ "Prioritization",
+      item == "supportive" ~ "Supportive",
+      TRUE ~ item
+    )
+  ) |>
+  ggplot(aes(x = log_letter_count, y = diff)) +
+  geom_point(alpha = 0.3) +
+  geom_smooth(method = "loess", se = TRUE, color = "steelblue") +
+  facet_wrap(~ item) +
+  labs(x = "Log Length (characters)", y = "Score Difference (AI - Supervisor)") +
+  theme_minimal()
+
+plot_scatter |>
+  ggsave(
+    filename = here("result", "quantitative", "fig_log_length_vs_score_diff.svg"),
+    plot = _, width = 12, height = 8
+  )
+
+plot_scatter
+```
+
+As a supplementary analysis, Spearman correlations between log length and score differences (AI minus Supervisor) were also examined. Only Clear Direction showed a nominally significant negative correlation (rho = -.156, uncorrected p = .005, Bonferroni-adjusted p = .025), indicating that longer logs were associated with slightly smaller score differences. However, this coefficient explains less than 2.5% of variance (r² = .024), and no other item reached significance after Bonferroni correction. Combined with the findings in Section 2.3, these results confirm that log length had negligible influence on both absolute scores and score differences between AI and supervisor feedback.
+
+## 3. Normality Testing and Sensitivity Analysis (Reviewer N6)
+
+### 3.1 Shapiro-Wilk Test on Raw Scores
+
+```{r}
+#| label: tbl-normality-raw
+#| tbl-cap: "Shapiro-Wilk Normality Tests on Raw Scores by Feedback Source and Item"
+
+raw_scores <- tidy_data |>
+  filter(person %in% c("ai", "supervisor"))
+
+normality_raw_scores <- raw_scores |>
+  group_by(person, item) |>
+  summarise(
+    n = n(),
+    shapiro_w = shapiro.test(value)$statistic,
+    shapiro_p = shapiro.test(value)$p.value,
+    .groups = "drop"
+  )
+
+# Feedback length (one value per record x person)
+raw_length <- tidy_data |>
+  distinct(record_id, person, .keep_all = TRUE) |>
+  filter(person %in% c("ai", "supervisor"))
+
+normality_raw_length <- raw_length |>
+  group_by(person) |>
+  summarise(
+    item = "feedback_length",
+    n = n(),
+    shapiro_w = shapiro.test(feedback_letter_count)$statistic,
+    shapiro_p = shapiro.test(feedback_letter_count)$p.value,
+    .groups = "drop"
+  )
+
+normality_raw <- bind_rows(normality_raw_scores, normality_raw_length) |>
+  mutate(
+    n_tests = n(),
+    bonferroni_p = pmin(shapiro_p * n_tests, 1)
+  )
+
+normality_raw |>
+  rio::export(here("result", "quantitative", "normality_raw_scores.csv"))
+
+normality_raw |>
+  transmute(
+    Source = case_when(
+      person == "ai" ~ "AI",
+      person == "supervisor" ~ "Supervisor",
+      TRUE ~ person
+    ),
+    Variable = case_when(
+      item == "accurate" ~ "Accurate",
+      item == "clear.direction" ~ "Clear Direction",
+      item == "criteria.based" ~ "Criteria Based",
+      item == "prioritization" ~ "Prioritization",
+      item == "supportive" ~ "Supportive",
+      item == "feedback_length" ~ "Feedback Length",
+      TRUE ~ item
+    ),
+    N = n,
+    `Shapiro-Wilk W` = sprintf("%.4f", shapiro_w),
+    `p (uncorrected)` = fmt_p(shapiro_p),
+    `p (Bonferroni)` = fmt_p(bonferroni_p)
+  ) |>
+  flextable() |>
+  merge_v(j = "Source") |>
+  valign(j = "Source", valign = "top") |>
+  align(align = "center", part = "all") |>
+  autofit()
+```
+
+### 3.2 Shapiro-Wilk Test on Paired Differences
+
+```{r}
+#| label: tbl-normality-tests
+#| tbl-cap: "Normality Tests and Non-Parametric Sensitivity Analysis"
+
+# Score differences (per item, pooling both assessor types)
+paired_scores <- tidy_data |>
+  filter(person %in% c("ai", "supervisor")) |>
+  mutate(id = paste0(record_id, "_", assessor_type)) |>
+  select(id, item, person, value) |>
+  pivot_wider(names_from = person, values_from = value) |>
+  mutate(diff = ai - supervisor)
+
+normality_scores <- paired_scores |>
+  group_by(item) |>
+  summarise(
+    variable = "Score",
+    n = n(),
+    shapiro_w = shapiro.test(diff)$statistic,
+    shapiro_p = shapiro.test(diff)$p.value,
+    wilcox_v = wilcox.test(ai, supervisor, paired = TRUE)$statistic,
+    wilcox_p = wilcox.test(ai, supervisor, paired = TRUE)$p.value,
+    ttest_p = t.test(ai, supervisor, paired = TRUE)$p.value,
+    .groups = "drop"
+  )
+
+# Feedback length differences
+paired_length <- tidy_data |>
+  distinct(record_id, person, .keep_all = TRUE) |>
+  filter(person %in% c("ai", "supervisor")) |>
+  select(record_id, person, feedback_letter_count) |>
+  pivot_wider(names_from = person, values_from = feedback_letter_count)
+
+length_diff <- paired_length$ai - paired_length$supervisor
+normality_length <- tibble(
+  item = "feedback_length",
+  variable = "Length",
+  n = length(length_diff),
+  shapiro_w = shapiro.test(length_diff)$statistic,
+  shapiro_p = shapiro.test(length_diff)$p.value,
+  wilcox_v = wilcox.test(paired_length$ai, paired_length$supervisor, paired = TRUE)$statistic,
+  wilcox_p = wilcox.test(paired_length$ai, paired_length$supervisor, paired = TRUE)$p.value,
+  ttest_p = t.test(paired_length$ai, paired_length$supervisor, paired = TRUE)$p.value
+)
+
+normality_all <- bind_rows(normality_scores, normality_length) |>
+  mutate(
+    n_tests = n(),
+    bonferroni_shapiro_p = pmin(shapiro_p * n_tests, 1),
+    normal = bonferroni_shapiro_p > 0.05,
+    wilcox_sig = wilcox_p < 0.05,
+    ttest_sig = ttest_p < 0.05,
+    conclusion_same = wilcox_sig == ttest_sig
+  )
+
+normality_all |>
+  rio::export(here("result", "quantitative", "normality_tests.csv"))
+
+normality_formatted <- normality_all |>
+  transmute(
+    Variable = case_when(
+      item == "accurate" ~ "Accurate",
+      item == "clear.direction" ~ "Clear Direction",
+      item == "criteria.based" ~ "Criteria Based",
+      item == "prioritization" ~ "Prioritization",
+      item == "supportive" ~ "Supportive",
+      item == "feedback_length" ~ "Feedback Length",
+      TRUE ~ item
+    ),
+    N = n,
+    `Shapiro-Wilk W` = sprintf("%.4f", shapiro_w),
+    `Shapiro-Wilk p` = fmt_p(shapiro_p),
+    `Wilcoxon V` = sprintf("%.0f", wilcox_v),
+    `Wilcoxon p` = fmt_p(wilcox_p),
+    `t-test p` = fmt_p(ttest_p),
+    `Same conclusion` = ifelse(conclusion_same, "Yes", "No")
+  )
+
+normality_formatted |>
+  rio::export(here("result", "quantitative", "normality_tests_formatted.csv"))
+
+normality_formatted |>
+  flextable() |>
+  align(align = "center", part = "all") |>
+  autofit()
+```
+
+### 3.3 Q-Q Plots
+
+```{r}
+#| label: fig-qq-plots
+#| fig-cap: "Q-Q Plots of Paired Differences (AI - Supervisor) for Each Rubric Item"
+
+qq_data <- paired_scores |>
+  mutate(
+    item = case_when(
+      item == "accurate" ~ "Accurate",
+      item == "clear.direction" ~ "Clear Direction",
+      item == "criteria.based" ~ "Criteria Based",
+      item == "prioritization" ~ "Prioritization",
+      item == "supportive" ~ "Supportive",
+      TRUE ~ item
+    )
+  )
+
+plot_qq <- qq_data |>
+  ggplot(aes(sample = diff)) +
+  stat_qq() +
+  stat_qq_line(color = "red") +
+  facet_wrap(~ item, scales = "free") +
+  labs(x = "Theoretical Quantiles", y = "Sample Quantiles") +
+  theme_minimal()
+
+plot_qq |>
+  ggsave(
+    filename = here("result", "quantitative", "fig_qq_plots_differences.svg"),
+    plot = _, width = 12, height = 8
+  )
+
+plot_qq
+```
+
+Shapiro-Wilk tests on raw scores confirmed that all rubric items were non-normally distributed for both AI and supervisor feedback (all Bonferroni-adjusted p < .001), consistent with ordinal ratings concentrated at 4–5 (ceiling effect). Only AI-generated feedback length followed a normal distribution (W = 0.983, Bonferroni-adjusted p = .556), while supervisor feedback length did not (W = 0.869, Bonferroni-adjusted p < .001).
+
+For paired t-tests, the critical distributional assumption concerns the normality of paired differences rather than raw scores. Shapiro-Wilk tests on the paired differences (AI minus Supervisor) revealed significant departures from normality for all five rubric items (all W < 0.94, all Bonferroni-adjusted p < .001). Only the feedback length difference satisfied the normality assumption (W = 0.992, p = .550). As a sensitivity analysis, Wilcoxon signed-rank tests were conducted alongside paired t-tests for all six comparisons. In every case, both parametric and non-parametric tests reached the same conclusion (all p < .01), confirming that the original parametric results are robust to violations of the normality assumption and that the findings reported in the main analysis are not methodological artifacts.
+
+## 4. Effect Sizes (Reviewer G5)
+
+```{r}
+#| label: tbl-effect-sizes
+#| tbl-cap: "Effect Sizes (Cohen's d) for AI vs Supervisor Comparisons"
+
+# Effect size for feedback length
+length_d <- mean(length_diff) / sd(length_diff)
+n_length <- length(length_diff)
+se_length_d <- sqrt(1 / n_length + length_d^2 / (2 * n_length))
+
+effect_length <- tibble(
+  comparison = "Feedback Length",
+  n_pairs = n_length,
+  mean_diff = mean(length_diff),
+  sd_diff = sd(length_diff),
+  cohens_d = length_d,
+  d_ci_low = length_d - 1.96 * se_length_d,
+  d_ci_high = length_d + 1.96 * se_length_d
+)
+
+# Effect sizes for rubric items
+effect_scores <- paired_scores |>
+  group_by(item) |>
+  summarise(
+    n_pairs = n(),
+    mean_diff = mean(diff),
+    sd_diff = sd(diff),
+    .groups = "drop"
+  ) |>
+  mutate(
+    cohens_d = mean_diff / sd_diff,
+    se_d = sqrt(1 / n_pairs + cohens_d^2 / (2 * n_pairs)),
+    d_ci_low = cohens_d - 1.96 * se_d,
+    d_ci_high = cohens_d + 1.96 * se_d,
+    comparison = case_when(
+      item == "accurate" ~ "Accurate",
+      item == "clear.direction" ~ "Clear Direction",
+      item == "criteria.based" ~ "Criteria Based",
+      item == "prioritization" ~ "Prioritization",
+      item == "supportive" ~ "Supportive",
+      TRUE ~ item
+    )
+  ) |>
+  select(comparison, n_pairs, mean_diff, sd_diff, cohens_d, d_ci_low, d_ci_high)
+
+effect_all <- bind_rows(effect_length, effect_scores) |>
+  mutate(
+    interpretation = case_when(
+      abs(cohens_d) >= 0.8 ~ "Large",
+      abs(cohens_d) >= 0.5 ~ "Medium",
+      abs(cohens_d) >= 0.2 ~ "Small",
+      TRUE ~ "Negligible"
+    )
+  )
+
+effect_all |>
+  rio::export(here("result", "quantitative", "effect_sizes.csv"))
+
+effect_formatted <- effect_all |>
+  transmute(
+    Comparison = comparison,
+    `N pairs` = n_pairs,
+    `Mean Diff` = sprintf("%.2f", mean_diff),
+    `SD Diff` = sprintf("%.2f", sd_diff),
+    `Cohen's d (95% CI)` = sprintf("%.2f (%.2f to %.2f)", cohens_d, d_ci_low, d_ci_high),
+    Interpretation = interpretation
+  )
+
+effect_formatted |>
+  rio::export(here("result", "quantitative", "effect_sizes_formatted.csv"))
+
+effect_formatted |>
+  flextable() |>
+  align(align = "center", part = "all") |>
+  autofit()
+```
+
+Cohen's d effect sizes with 95% confidence intervals were computed for all AI versus supervisor comparisons. For feedback length, AI-generated feedback was substantially longer than supervisor feedback (mean difference = 284.16 characters, d = 2.84, 95% CI 2.50 to 3.19), representing a large effect. Among rubric items, effect sizes varied considerably: Criteria Based showed a large effect (d = 0.93, 95% CI 0.79 to 1.06), Clear Direction a medium effect (d = 0.73, 95% CI 0.61 to 0.86), Prioritization (d = 0.36) and Accurate (d = 0.22) small effects, and Supportive a negligible effect (d = 0.17, 95% CI 0.06 to 0.28). All Cohen's d values were positive, indicating that AI consistently scored higher than supervisors across all items, though the practical significance ranged from negligible to large depending on the rubric dimension. All 95% confidence intervals excluded zero, consistent with the statistically significant paired differences reported in the main analysis.
+
+## 5. Inter-Rater Reliability (Reviewers F8, N5)
+
+Agreement between faculty and student evaluators for the same record.
+
+```{r}
+#| label: tbl-irr
+#| tbl-cap: "Inter-Rater Reliability Between Faculty and Student Evaluators"
+
+# Prepare data: for each item x person combination, get faculty vs student ratings
+irr_data <- tidy_data |>
+  select(record_id, assessor_type, item, person, value) |>
+  pivot_wider(names_from = assessor_type, values_from = value)
+
+# Compute IRR for each item x person combination
+irr_results <- irr_data |>
+  group_by(item, person) |>
+  group_modify(~ {
+    mat <- .x |> select(faculty, student)
+    n <- nrow(mat)
+
+    # Percentage agreement
+    pct_agree <- mean(mat$faculty == mat$student, na.rm = TRUE) * 100
+
+    # Cohen's weighted kappa (quadratic weights)
+    kq <- tryCatch(
+      irr::kappa2(mat, weight = "squared"),
+      error = function(e) list(value = NA, p.value = NA)
+    )
+
+    # ICC (two-way mixed, agreement, single measures)
+    icc_res <- tryCatch({
+      res <- irr::icc(mat, model = "twoway", type = "agreement", unit = "single")
+      list(value = res$value, lbound = res$lbound, ubound = res$ubound, p = res$p.value)
+    }, error = function(e) {
+      list(value = NA, lbound = NA, ubound = NA, p = NA)
+    })
+
+    tibble(
+      n = n,
+      pct_agreement = pct_agree,
+      kappa_quadratic = kq$value,
+      kappa_p = kq$p.value,
+      icc_value = icc_res$value,
+      icc_lower = icc_res$lbound,
+      icc_upper = icc_res$ubound,
+      icc_p = icc_res$p
+    )
+  }) |>
+  ungroup()
+
+irr_results |>
+  rio::export(here("result", "quantitative", "inter_rater_reliability.csv"))
+
+irr_formatted <- irr_results |>
+  transmute(
+    Item = case_when(
+      item == "accurate" ~ "Accurate",
+      item == "clear.direction" ~ "Clear Direction",
+      item == "criteria.based" ~ "Criteria Based",
+      item == "prioritization" ~ "Prioritization",
+      item == "supportive" ~ "Supportive",
+      TRUE ~ item
+    ),
+    Person = case_when(
+      person == "ai" ~ "AI",
+      person == "supervisor" ~ "Supervisor",
+      TRUE ~ person
+    ),
+    N = n,
+    `% Agreement` = sprintf("%.1f", pct_agreement),
+    `Weighted Kappa` = sprintf("%.3f", kappa_quadratic),
+    `Kappa p` = fmt_p(kappa_p),
+    `ICC (95% CI)` = sprintf("%.3f (%.3f-%.3f)", icc_value, icc_lower, icc_upper),
+    `ICC p` = fmt_p(icc_p)
+  )
+
+irr_formatted |>
+  rio::export(here("result", "quantitative", "inter_rater_reliability_formatted.csv"))
+
+irr_formatted |>
+  flextable() |>
+  merge_v(j = "Item") |>
+  valign(j = "Item", valign = "top") |>
+  align(align = "center", part = "all") |>
+  autofit()
+```
+
+Kappa interpretation (Landis & Koch, 1977): <0 = Poor, 0.00-0.20 = Slight, 0.21-0.40 = Fair, 0.41-0.60 = Moderate, 0.61-0.80 = Substantial, 0.81-1.00 = Almost Perfect.
+
+Inter-rater reliability between faculty and student evaluators differed markedly depending on the feedback source. For supervisor feedback, weighted kappa values ranged from 0.365 (Supportive) to 0.535 (Clear Direction), corresponding to fair-to-moderate agreement on the Landis and Koch scale, and all ICCs were statistically significant (all p < .001). Clear Direction showed the highest consistency (ICC = 0.536, 95% CI 0.417–0.638). For AI-generated feedback, by contrast, agreement was poor: weighted kappa values ranged from 0.042 (Prioritization) to 0.150 (Clear Direction), falling in the slight-or-below category, and most were not statistically significant. This pattern suggests that faculty and student evaluators applied the rubric more consistently when assessing supervisor feedback than when assessing AI feedback, possibly because the structured and formulaic nature of AI output was interpreted differently by the two evaluator groups.
+
+These results should be interpreted with caution given that ordinal ratings were concentrated at 4–5 (ceiling effect), which can attenuate kappa values even when raw agreement is reasonable. Percentage agreement is reported alongside kappa to provide context. Furthermore, because each record was evaluated by only one faculty member and one student, these reliability estimates reflect pairwise agreement rather than generalizability across the full evaluator pool. This design limitation, as noted by Reviewer N5, means that the observed scores may not fully represent what other evaluators would have assigned, and this should be acknowledged as a limitation of the study.

@@ -1,0 +1,805 @@
+---
+title: "Comparison of Feedback from AI and Supervisors"
+author:
+  name: Takeshi Kondo
+  orcid: 0000-0002-3307-671X
+editor:
+  render-on-save: true
+format:
+  html:
+    code-fold: true
+  docx:
+    toc: false
+  typst:
+    toc: true
+    section-numbering: 1.1.a
+---
+
+# Analysis
+
+Medical students and supervisors have evaluated the feedback provided by AI(OpenAI API) and humans(supervisors) with scores and free-text comments. In this analysis, we use `{r} R.version.string`.
+
+```{r}
+# First, load the data, standardize the format,
+# and exclude data that is not subject to analysis.
+
+# Ensure renv is active (needed when running cells interactively in VSCode)
+if (is.null(renv::project())) renv::load()
+
+# Load necessary packages
+if (!requireNamespace("pacman", quietly = TRUE))
+  install.packages("pacman", quietly = TRUE)
+pacman::p_load(
+  tidyr,
+  dplyr,
+  lubridate,
+  gt,
+  here,
+  stringr,
+  rio,
+  svglite,
+  ggplot2,
+  ggh4x,
+  ordinal,
+  purrr,
+  broom,
+  flextable
+)
+
+# Format p-values per JMIR guidelines:
+# - no leading zero (.142 not 0.142)
+# - p < .001 → "<.001"
+# - p >= 0.9995 (rounds to 1.000) → ">.99"
+fmt_p <- function(p) {
+  ifelse(p < 0.001, "<.001",
+    ifelse(p >= 0.9995, ">.99",
+      sub("^0\\.", ".", sprintf("%.3f", p))
+    )
+  )
+}
+
+# Load the tidy data created in make_tidy_data.r
+tidy_data <- rio::import(here("data", "quantitative", "data.csv"))
+
+```
+
+## Data Description
+
+```{r}
+summary <- tidy_data |>
+  summarise(
+    min_time = min(time, na.rm = TRUE),
+    max_time = max(time, na.rm = TRUE),
+    count = n_distinct(ID),
+    dataset_count = n_distinct(record_id),
+    department_count = n_distinct(department),
+    student_count = n_distinct(student),
+    supervisor_count = n_distinct(feedback_provider),
+    unique_clinical_logs = n_distinct(log_id)
+  )
+
+summary |>
+  rio::export(here("result", "quantitative", "dataset_summary.csv"))
+```
+
+As shown below, the data were collected over the period from `{r} format(summary$min_time,"%Y-%m-%d")` to `{r} format(summary$max_time,"%Y-%m-%d")`, and include a total of `{r} summary$count` records. The dataset contains `{r} summary$dataset_count` datasets from `{r} summary$department_count` departments, `{r} summary$student_count` students, and `{r} summary$supervisor_count` supervisors ([@tbl-dataset-summary]).
+
+```{r}
+#| label: tbl-dataset-summary
+#| tbl-cap: "Overview of the Dataset"
+
+summary_ft <- summary |>
+  mutate(
+    min_time = format(min_time, "%Y-%m-%d"),
+    max_time = format(max_time, "%Y-%m-%d")
+  )
+
+flextable(summary_ft) |>
+  set_header_labels(
+    min_time = "Start Time",
+    max_time = "End Time",
+    count = "Total Records",
+    dataset_count = "Total Datasets",
+    department_count = "Departments",
+    student_count = "Students",
+    supervisor_count = "Supervisors",
+    unique_clinical_logs = "Unique Clinical Logs"
+  ) |>
+  colformat_num(
+    j = c("count", "dataset_count", "department_count", "student_count", "supervisor_count", "unique_clinical_logs"),
+    digits = 0
+  ) |>
+  align(align = "center", part = "header") |>
+  autofit()
+
+```
+
+The number of students, supervisors, and datasets for each department is summarized and displayed in tabular form ([@tbl-count-per-department]).
+
+```{r}
+#| label: tbl-count-per-department
+#| tbl-cap: "Count per Department"
+count_per_department <- tidy_data |>
+  group_by(department) |>
+  summarise(
+    students = n_distinct(student),
+    supervisors = n_distinct(feedback_provider),
+    dataset_count = n_distinct(record_id)
+  ) |>
+  arrange(department)
+
+count_per_department |>
+  flextable() |>
+  set_header_labels(
+    department = "Department",
+    students = "Students",
+    supervisors = "Supervisors",
+    dataset_count = "Dataset Count"
+  ) |>
+  colformat_num(
+    j = c("students", "supervisors", "dataset_count"),
+    digits = 0
+  ) |>
+  align(align = "center", part = "header") |>
+  autofit()
+
+count_per_department |>
+  rio::export(here("result", "quantitative", "count_per_department.csv"))
+```
+
+## Difference Between Feedback Length
+
+Feedback length was measured in characters, because the feedback was written in Japanese, and Japanese makes objective word counts difficult compared to languages such as English, it was more objective to measure by character count.
+
+```{r}
+paired_by_id <- tidy_data |>
+  distinct(record_id,person, .keep_all = TRUE) |>
+  mutate(id = record_id) |>
+  filter(person %in% c("ai","supervisor")) |>
+  select(id, person, feedback_letter_count) |>
+  pivot_wider(names_from = person, values_from = feedback_letter_count)
+
+ttab <- paired_by_id |>
+  summarise(
+    n_pair   = n(),
+    mean_diff = mean(ai - supervisor),
+    ttest_list   = list(t.test(ai, supervisor, paired = TRUE)),
+    mean_ai   = mean(ai),
+    mean_supervisor = mean(supervisor),
+    ttest_ai = list(t.test(ai, conf.level = 0.95)),
+    ttest_supervisor = list(t.test(supervisor, conf.level = 0.95)),
+    sd_ai = sd(ai, na.rm = TRUE),
+    sd_supervisor = sd(supervisor, na.rm = TRUE),
+    mean_diff = mean(ai - supervisor),
+    .groups = "drop"
+  ) |>
+  mutate(
+    ttest_p   = map_dbl(ttest_list, ~ .x$p.value),
+    ai_ci_low = map_dbl(ttest_ai, ~ .x$conf.int[1]),
+    ai_ci_high= map_dbl(ttest_ai, ~ .x$conf.int[2]),
+    supervisor_ci_low = map_dbl(ttest_supervisor, ~ .x$conf.int[1]),
+    supervisor_ci_high= map_dbl(ttest_supervisor, ~ .x$conf.int[2]),
+    mean_diff_ci_low  = map_dbl(ttest_list, ~ .x$conf.int[1]),
+    mean_diff_ci_high = map_dbl(ttest_list, ~ .x$conf.int[2])
+  ) |>
+  mutate(
+    p_fmt     = fmt_p(ttest_p)
+  ) |>
+  select(-ttest_list, -ttest_ai, -ttest_supervisor)
+
+ttab |> rio::export(here::here("result", "quantitative","paired_ttest_length_results.csv"))
+
+```
+
+Mean lengths were `{r} round(ttab$mean_ai,2)`(95% CI `{r} round(ttab$ai_ci_low,2)`-`{r} round(ttab$ai_ci_high,2)`) letters for AI and `{r} round(ttab$mean_supervisor,2)`(95% CI `{r} round(ttab$supervisor_ci_low,2)`-`{r} round(ttab$supervisor_ci_high,2)`) letters for supervisors. The distribution of letter counts for feedback by AI and supervisors is shown in @fig-feedback-length-comparison. Paired t-test results indicated that the letter count of AI feedback was significantly higher than that of supervisor feedback (mean difference `{r} round(ttab$mean_diff,2)` letters; 95% CI `{r} round(ttab$mean_diff_ci_low,2)`-`{r} round(ttab$mean_diff_ci_high,2)`; p `{r} ttab$p_fmt`).
+
+```{r}
+#| label: fig-feedback-length-comparison
+#| fig-cap: Distribution of Letter Count for Feedback by AI and Supervisors
+
+# Create the histogram
+plot <- tidy_data |>
+  distinct(record_id, person, .keep_all = TRUE) |>
+  ggplot(aes(x = feedback_letter_count, fill = person)) +
+  geom_histogram(alpha = 0.6, position = "identity", bins = 30) +
+  scale_fill_manual(values = c("ai" = "blue", "supervisor" = "orange")) +
+  labs(
+    x = "Letter Count",
+    y = "Frequency",
+    fill = "Feedback Provider"
+  ) +
+  theme_minimal()
+
+plot |>
+  ggsave(
+    filename = here("result", "quantitative", "fig_length_distribution.svg"),
+    plot = _,
+    width = 10, height = 6
+  )
+
+plot
+```
+
+paired t-test results are summarized in @tbl-feedback-length-comparison.
+
+```{r}
+#| label: tbl-feedback-length-comparison
+#| tbl-cap: Paired t-test of Feedback Length by AI and Humans
+
+display_df <- ttab |>
+  transmute(
+    mean_diff = paste0(round(mean_diff,2)," (", round(mean_diff_ci_low,2), "- ", round(mean_diff_ci_high,2), ")"),
+    mean_ai = paste0(round(mean_ai,2), " (", round(ai_ci_low,2), "-", round(ai_ci_high,2), ")"),
+    mean_supervisor = paste0(round(mean_supervisor,2), " (", round(supervisor_ci_low,2), "-", round(supervisor_ci_high,2), ")"),
+    p_value = p_fmt
+  ) 
+
+display_df |> rio::export(here::here("result", "quantitative","paired_ttest_length_results_formatted.csv"))
+
+avail <- 6.5
+w <- rep(avail /ncol(display_df), ncol(display_df))
+
+ft <- display_df |>
+  flextable() |>
+  flextable::set_table_properties(layout = "fixed") |>
+  flextable::width(width = w) |>
+  flextable::bold(part = "header") |>
+  flextable::align(align = "center", part = "all") |>
+  flextable::set_header_labels(
+    mean_diff = "Mean Difference (AI - Supervisor)(95% CI)",
+    mean_ai = "Mean AI (95% CI)",
+    mean_supervisor = "Mean Supervisor (95% CI)",
+    p_value = "p-value"
+  ) |>
+  flextable::set_caption("t-test results comparing AI and Supervisor letter counts")
+
+ft
+```
+
+## Differences in Feedback Scores by AI and Supervisors
+
+@fig-diff-ai-vs-supervisor shows the differences in feedback scores by AI and supervisors for the same record. Values greater than 0 indicate that the AI score is higher, and values less than 0 indicate that the supervisor score is higher. Although there are slight differences among evaluators, AI scores tend to be higher except for the “supportive” item.
+
+```{r}
+#| label: fig-diff-ai-vs-supervisor
+#| fig-cap: "Comparison of Scores for Feedback by AI and Humans"
+
+paired_by_id <- tidy_data |>
+  filter(person %in% c("ai","supervisor")) |>
+  select(item, assessor_type, record_id, person, value) |>
+  pivot_wider(names_from = person, values_from = value) |>
+  distinct(record_id, item,assessor_type, .keep_all = TRUE)
+
+diff_by_id <- paired_by_id |>
+  mutate(diffvalue = ai - supervisor)
+
+item_levels <- c("criteria.based", "clear.direction", "accurate", "prioritization", "supportive")
+item_labels <- c("(A) Criteria Based", "(B) Clear Direction", "(C) Accurate", "(D) Prioritization", "(E) Supportive")
+
+graph_diff_by_id <- diff_by_id |>
+  mutate(item = factor(item, levels = item_levels, labels = item_labels)) |>
+  ggplot(aes(x = diffvalue, fill = assessor_type)) +
+  geom_bar(position = "dodge") +
+  facet_wrap2(~ item, axes = "all") +
+  ggtitle("Differences between scores(AI-Supervisor)") +
+  scale_x_continuous(breaks = -4:4) +
+  labs(x = "Difference between AI and Supervisor") +
+  theme_minimal()
+
+graph_diff_by_id |>
+  ggsave(
+    filename = here("result", "quantitative", "fig_diff_ai_vs_supervisor.svg"),
+    plot = _,
+    width = 10, height = 6
+  )
+
+graph_diff_by_id
+```
+
+Next, to get an overall sense of whether AI or supervisors tend to give higher scores, we will calculate the average score for each, show the difference and the 95% confidence interval, and perform a paired t-test to check if the difference is statistically significant. Since we are conducting multiple comparisons (5 items), we applied Bonferroni correction to adjust for multiple testing (adjusted α = 0.05/5 = 0.01). @tbl-chatgptvsait shows that AI gives significantly higher average scores than supervisors for the items "accurate", "criteria based", "clear direction", and "prioritization" even after Bonferroni correction, while "supportive" do not reach statistical significance after correction.
+
+```{r}
+#| label: tbl-chatgptvsait
+#| tbl-cap: "Paired T-test Results Comparing AI and Supervisor Feedback Scores (with Bonferroni Correction)"
+
+paired_by_id_and_assessortype <- tidy_data |>
+  mutate(id = paste0(record_id,"_",assessor_type)) |>
+  filter(person %in% c("ai","supervisor")) |>
+  select(item, id, person, value) |>
+  pivot_wider(names_from = person, values_from = value)
+
+ttab <- paired_by_id_and_assessortype |>
+  group_by(item) |>
+  summarise(
+    n_pair   = n(),
+    mean_diff = mean(ai - supervisor),
+    ttest_p   = t.test(ai, supervisor, paired = TRUE)$p.value,
+    t         = t.test(ai, supervisor, paired = TRUE)$statistic,
+    df        = t.test(ai, supervisor, paired = TRUE)$parameter,
+    mean_ai   = mean(ai),
+    mean_supervisor = mean(supervisor),
+    ai_ci_low = t.test(ai, conf.level = 0.95)$conf.int[1],
+    ai_ci_high= t.test(ai, conf.level = 0.95)$conf.int[2],
+    ai_sd = sd(ai),
+    supervisor_sd = sd(supervisor),
+    diff_sd = sd(ai - supervisor),
+    supervisor_ci_low = t.test(supervisor, conf.level = 0.95)$conf.int[1],
+    supervisor_ci_high= t.test(supervisor, conf.level = 0.95)$conf.int[2],
+    mean_diff_ci_low  = t.test(ai, supervisor, paired = TRUE)$conf.int[1],
+    mean_diff_ci_high = t.test(ai, supervisor, paired = TRUE)$conf.int[2],
+    .groups = "drop"
+  ) |>
+  ungroup() |>
+  mutate(
+    n_comparisons = n(),  # Number of items being compared
+    bonferroni_p = pmin(ttest_p * n_comparisons, 1),  # Bonferroni correction
+    p_fmt     = fmt_p(ttest_p),
+    bonferroni_p_fmt = fmt_p(bonferroni_p)
+  )
+
+ttab |> rio::export(here::here("result", "quantitative","paired_ttest_results.csv"))
+
+display_df <- ttab |>
+  mutate(
+    cohens_d = mean_diff / diff_sd,
+    se_d = sqrt(1 / n_pair + cohens_d^2 / (2 * n_pair)),
+    d_ci_low = cohens_d - 1.96 * se_d,
+    d_ci_high = cohens_d + 1.96 * se_d
+  ) |>
+  transmute(
+    Item = item,
+    mean_diff = paste0(round(mean_diff,2)," (", round(mean_diff_ci_low,2), "- ", round(mean_diff_ci_high,2), ")"),
+    mean_ai = paste0(round(mean_ai,2), " (", round(ai_ci_low,2), "-", round(ai_ci_high,2), ")"),
+    mean_supervisor = paste0(round(mean_supervisor,2), " (", round(supervisor_ci_low,2), "-", round(supervisor_ci_high,2), ")"),
+    cohens_d = sprintf("%.2f (%.2f to %.2f)", cohens_d, d_ci_low, d_ci_high),
+    p_uncorrected = p_fmt,
+    p_bonferroni = bonferroni_p_fmt
+  ) |>
+  mutate(
+    Item = case_when(
+      Item == "accurate" ~ "Accurate",
+      Item == "clear.direction" ~ "Clear Direction",
+      Item == "criteria.based" ~ "Criteria Based",
+      Item == "prioritization" ~ "Prioritization",
+      Item == "supportive" ~ "Supportive",
+      TRUE ~ Item
+    )
+  )
+
+display_df |> rio::export(here::here("result", "quantitative","paired_ttest_results_formatted.csv"))
+
+ft <- flextable(display_df) |>
+  flextable::autofit() |>
+  flextable::bold(part = "header") |>
+  flextable::align(align = "center", part = "all") |>
+  flextable::valign(j = "Item", valign = "top") |>
+  flextable::align(j = "Item", align = "left", part = "body") |>
+  flextable::set_header_labels(
+    mean_diff = "Mean Difference (AI - Supervisor)(95% CI)",
+    mean_ai = "Mean AI (95% CI)",
+    mean_supervisor = "Mean Supervisor (95% CI)",
+    cohens_d = "Cohen's d (95% CI)",
+    p_uncorrected = "p-value",
+    p_bonferroni = "p (Bonferroni)"
+  ) |>
+  flextable::set_caption("Paired t-test results comparing AI and Supervisor ratings (with Bonferroni correction for 5 comparisons)")
+ft
+  
+```
+
+Because the rubric used for scoring is a 5-point scale and the intervals from 1 to 5 may not be equal, using means may not be appropriate. Therefore, we used ordinal logistic regression to examine whether there are differences between AI and supervisors at each score level. Ordinal logistic regression is a type of regression analysis used when the dependent variable is ordinal (e.g., evaluation scores from 1 to 5). We also employed a mixed-effects model to account for assessor type (student or faculty) and random effects by assessor. The results are shown in @tbl-ordinal-regression-clmm. The ordinal logistic regression indicated that, for the items criteria based, and clear direction, AI feedback received significantly higher scores than supervisor feedback (OR = 11.81 [95% CI: 7.64–18.27], p < 0.001; OR = 6.61 [95% CI: 4.35–10.06], p < 0.001). In contrast, for accurate, priotization, and supportive, AI tended to receive higher scores, but the differences between AI and supervisors were not significant (OR = 1.35 [95% CI: 0.91–2.00], p = 1.000; OR = 1.70 [95% CI: 1.16–2.50], p = 0.098; OR = 1.34 [95% CI: 0.87–2.49], p = 1.000). (OR = 1.35 [95% CI: 0.91–2.00], p = 0.142; OR = 1.34 [95% CI: 0.87–2.06], p = 0.189). Regarding assessor type (student vs faculty), no significant differences were observed for any items after Bonferroni correction. We also included interaction terms to test whether the effects of AI vs supervisor depended on assessor type, but no significant interaction effects were observed for any item.
+
+```{r}
+#| label: tbl-ordinal-regression-clmm
+#| tbl-cap: "CLMM Results Comparing AI and Supervisor Feedback Scores"
+
+# Set reference categories explicitly (person: AI reference, assessor_type: faculty reference)
+tidy_data_prepared <- tidy_data |>
+  mutate(
+    person         = factor(person, levels = c("supervisor", "ai")),
+    assessor_type  = factor(assessor_type, levels = c("faculty", "student")),
+    department     = factor(department),
+    assessor       = factor(feedback_provider)  # use actual evaluator ID column (e.g., feedback_provider)
+  )
+
+# --- 1. Function to analyze a single item --------------------------------------
+fit_one_item <- function(item_name, dat = tidy_data_prepared) {
+  df <- dat |>
+    filter(item == item_name) |>
+    mutate(value = factor(value)) |>      # ordinal categories (1–5)
+    drop_na(value, person, assessor_type, department, assessor)
+
+  # Skip if too few observations
+  if (nrow(df) < 20) {
+    return(list(
+      item = item_name,
+      fixed = tibble(), random = tibble(), thresh = tibble(), fit = tibble()
+    ))
+  }
+
+  # Cumulative link mixed model (ordinal)
+  m <- clmm(
+    value ~ person * assessor_type + (1 | department) + (1 | assessor),
+    data = df,
+    link = "logit",
+    Hess = TRUE
+  )
+
+  # --- Fixed effects (exclude thresholds) → OR, Wald 95% CI, p-value
+  coefs <- summary(m)$coefficients
+  is_threshold <- str_detect(rownames(coefs), "\\|")
+  fe <- as_tibble(coefs[!is_threshold, , drop = FALSE], rownames = "term") |>
+    transmute(
+      item = item_name,
+      term,
+      estimate = Estimate,
+      std_error = `Std. Error`,
+      z = `z value`,
+      p_value = `Pr(>|z|)`,
+      OR = exp(estimate),
+      OR_low = exp(estimate - 1.96 * std_error),
+      OR_high = exp(estimate + 1.96 * std_error)
+    )
+
+  # --- Random effect variances
+  nz <- function(x, alt) if (is.null(x)) alt else x
+
+  re <- purrr::imap_dfr(VarCorr(m), function(comp, grpname) {
+    if (is.matrix(comp)) {
+      v <- diag(comp)
+      eff <- nz(colnames(comp), "(Intercept)")
+      tibble(
+        item = item_name,
+        group = grpname,
+        effect = eff,
+        variance = as.numeric(v),
+        sd = sqrt(as.numeric(v))
+      )
+    } else {
+      sdv <- as.numeric(comp)
+      nm  <- nz(names(comp), "(Intercept)")
+      v   <- sdv^2
+      tibble(
+        item = item_name,
+        group = grpname,
+        effect = nm,
+        variance = v,
+        sd = sdv
+      )
+    }
+  })
+
+  # --- Thresholds
+  th <- as_tibble(coefs[is_threshold, , drop = FALSE], rownames = "threshold") |>
+    transmute(
+      item = item_name,
+      threshold,
+      estimate = Estimate,
+      std_error = `Std. Error`,
+      z = `z value`
+    )
+
+  # --- Fit statistics
+  fit <- tibble(
+    item = item_name,
+    n_obs = nobs(m),
+    logLik = as.numeric(logLik(m)),
+    AIC = AIC(m),
+    link = m$link,
+    thresholds = m$thresholds
+  )
+
+  list(item = item_name, fixed = fe, random = re, thresh = th, fit = fit)
+}
+
+# --- 2. Loop over all items ----------------------------------------------------
+all_items <- tidy_data_prepared |> distinct(item) |> pull(item) |> sort()
+res_list <- map(all_items, fit_one_item) 
+
+# bind_rows (drop empties)
+fixed_all  <- map(res_list, "fixed")  |> list_rbind()
+random_all <- map(res_list, "random") |> list_rbind()
+thresh_all <- map(res_list, "thresh") |> list_rbind()
+fit_all    <- map(res_list, "fit")    |> list_rbind()
+
+# --- 3. Readable summary table (fixed effects: OR (95% CI) and p-value) --------
+label_term <- function(x) {
+  dplyr::case_when(
+    x == "personai" ~ "Provider: AI (vs supervisor)",
+    x == "assessor_typestudent" ~ "Assessor type: student (vs faculty)",
+    x == "personai:assessor_typestudent" ~ "Interaction: supervisor × student",
+    TRUE ~ x
+  )
+}
+
+summary_table <- fixed_all |>
+  mutate(
+    term_order = factor(term, levels = c("Provider: AI (vs supervisor)", "Assessor type: student (vs faculty)", "Interaction: supervisor × student")),
+    Effect = label_term(term),
+    OR_display = sprintf("%.2f (%.2f–%.2f)", OR, OR_low, OR_high),
+    p_display = fmt_p(p_value)
+  ) |>
+  arrange(match(item, all_items), term_order) |>
+  select(item, Effect, OR_display, p_display) |>
+  dplyr::transmute(
+    Item = item,
+    Effect = Effect,
+    `Odds Ratio (95% CI)` = OR_display,
+    `p-value` = p_display
+  )
+
+
+# --- 4. Export CSV -------------------------------------------------------------
+rio::export(fixed_all,     here::here("result", "quantitative", "clmm_fixed_effects_all_items.csv"))
+rio::export(random_all,    here::here("result", "quantitative", "clmm_random_effects_all_items.csv"))
+rio::export(thresh_all,    here::here("result", "quantitative", "clmm_thresholds_all_items.csv"))
+rio::export(fit_all,       here::here("result", "quantitative", "clmm_model_fit_all_items.csv"))
+rio::export(summary_table, here::here("result", "quantitative", "clmm_summary_formatted.csv"))
+
+# --- 5. Bonferroni correction for CLMM fixed effects --------------------------
+n_items <- length(all_items)
+n_effects_per_item <- 3  # person, assessor_type, interaction
+total_tests <- n_items * n_effects_per_item
+
+fixed_all <- fixed_all |>
+  mutate(
+    bonferroni_p = pmin(p_value * total_tests, 1),
+    p_fmt = fmt_p(p_value),
+    bonferroni_p_fmt = fmt_p(bonferroni_p)
+  )
+
+# Update summary table with both uncorrected and corrected p-values
+summary_table <- fixed_all |>
+  mutate(
+    term_order = factor(term, levels = c("personai", "assessor_typestudent", "personai:assessor_typestudent")),
+    Effect = label_term(term),
+    OR_display = sprintf("%.2f (%.2f–%.2f)", OR, OR_low, OR_high)
+  ) |>
+  arrange(match(item, all_items), term_order) |>
+  select(item, Effect, OR_display, p_fmt, bonferroni_p_fmt) |>
+  dplyr::transmute(
+    Item = item,
+    Effect = Effect,
+    OR = OR_display,
+    p_uncorrected = p_fmt,
+    p_bonferroni = bonferroni_p_fmt
+  ) |>
+  mutate(
+    Item = case_when(
+      Item == "accurate" ~ "Accurate",
+      Item == "clear.direction" ~ "Clear Direction",
+      Item == "criteria.based" ~ "Criteria Based",
+      Item == "prioritization" ~ "Prioritization",
+      Item == "supportive" ~ "Supportive",
+      TRUE ~ Item
+    )
+  )
+
+# --- 6. Export CSV -------------------------------------------------------------
+rio::export(fixed_all,     here::here("result", "quantitative", "clmm_fixed_effects_all_items_bonferroni.csv"))
+rio::export(random_all,    here::here("result", "quantitative", "clmm_random_effects_all_items.csv"))
+rio::export(thresh_all,    here::here("result", "quantitative", "clmm_thresholds_all_items.csv"))
+rio::export(fit_all,       here::here("result", "quantitative", "clmm_model_fit_all_items.csv"))
+rio::export(summary_table, here::here("result", "quantitative", "clmm_summary_formatted_bonferroni.csv"))
+
+# --- 7. Nicely formatted table (flextable) -----------------------------
+
+ft <- summary_table |>
+  flextable::flextable() |>
+  flextable::merge_v(j = "Item") |>
+  flextable::valign(j = "Item", valign = "top") |>
+  flextable::autofit() |>
+  flextable::bold(part = "header") |>
+  flextable::align(align = "center", part = "all") |>
+  flextable::align(j = "Effect", align = "left", part = "body") |>
+  flextable::set_header_labels(
+    Item = "Item",
+    Effect = "Effect",
+    OR = "Odds Ratio (95% CI)",
+    p_uncorrected = "p-value",
+    p_bonferroni = "p (Bonferroni)"
+  ) |>
+  flextable::set_caption(
+    "CLMM Fixed Effects Summary (all items, link = logit). Reference: AI × faculty. Values are OR (95% CI) and p-values. Bonferroni-corrected p-values are capped at 1.000."
+  )
+
+ft
+
+```
+
+## Correlation between feedback length and score
+
+To investigate whether the letter count of feedback is correlated with the scores given by evaluators, we calculated the Spearman's rank correlation coefficient for each feedback provider. The results are summarized in @tbl-correlation-between-letter-count-and-score. A significant positive correlation would suggest that longer feedback tends to receive higher scores. No significant correlation was observed between text length and score for AI, but a significant correlation was found for all item categories for supervisors. This suggests that longer feedback from supervisors tends to receive higher scores.
+
+```{r}
+#| label: tbl-correlation-between-letter-count-and-score
+#| tbl-cap: "Correlation between Letter Count and Score for Each Feedback Provider"
+
+# Calculate the correlation between letter count and score for each feedback provider
+
+
+cor_test_results <- tidy_data |>
+  group_by(person, item) |>
+  summarise(
+    cor = cor(feedback_letter_count, value, method = "spearman", use = "complete.obs"),
+    p_value = suppressWarnings(cor.test(feedback_letter_count, value, method = "spearman")$p.value),
+    .groups = "drop"
+  ) |>
+  ungroup() |>
+  mutate(
+    n_tests = n(),  # Total number of correlation tests
+    bonferroni_p = pmin(p_value * n_tests, 1),  # Bonferroni correction
+    bonferroni_p_fmt = fmt_p(bonferroni_p)
+  )
+
+cor_test_results |>
+  rio::export(here("result", "quantitative", "correlation_letter_count_score_by_person_item.csv"))
+
+cor_test_results_formatted <- cor_test_results |>
+  mutate(
+    cor_display = sprintf("%.2f", cor),
+    p_uncorrected_display = fmt_p(p_value),
+    p_bonferroni_display = bonferroni_p_fmt
+  ) |>
+  select(
+    feedback_provider = person,
+    Item = item,
+    spearman = cor_display,
+    p_uncorrected = p_uncorrected_display,
+    p_bonferroni = p_bonferroni_display
+  )|>
+  mutate(
+    Item = case_when(
+      Item == "accurate" ~ "Accurate",
+      Item == "clear.direction" ~ "Clear Direction",
+      Item == "criteria.based" ~ "Criteria Based",
+      Item == "prioritization" ~ "Prioritization",
+      Item == "supportive" ~ "Supportive",
+      TRUE ~ Item
+    ),
+    feedback_provider = case_when(
+      feedback_provider == "ai" ~ "AI",
+      feedback_provider == "supervisor" ~ "Supervisor",
+      TRUE ~ feedback_provider
+    )
+  )
+
+
+cor_test_results_formatted |>
+  rio::export(here("result", "quantitative", "correlation_letter_count_score_by_person_item_formatted.csv"))
+
+avail <- 6
+w <- rep(avail /ncol(cor_test_results_formatted), ncol(cor_test_results_formatted))
+
+cor_test_results_formatted |>
+  flextable() |>
+  flextable::set_caption("Spearman's Rank Correlation between Letter Count and Score by Feedback Provider and Item (with Bonferroni correction for 10 comparisons)") |>
+  flextable::set_table_properties(layout = "fixed") |>
+  flextable::width(width = w) |>
+  flextable::align(align = "center", part = "all") |>
+  merge_v(j = "feedback_provider") |>
+  flextable::align(j = "feedback_provider", align = "left", part = "body") |>
+  flextable::align(j = "Item", align = "left", part = "body") |>
+  set_header_labels(
+    Item = "Item",
+    feedback_provider = "Feedback Provider",
+    spearman = "Spearman's ρ",
+    p_uncorrected = "p-value",
+    p_bonferroni = "p (Bonferroni)"
+  ) |>
+  theme_vanilla()
+
+```
+
+## Consistency of Feedback Quality
+
+To compare the consistency of feedback quality between AI and supervisors, we plotted the distribution of per-record mean scores (see @fig-mean-score-per-record). AI exhibited smaller score dispersion, suggesting higher consistency in feedback quality. We further tested whether the variance of per-record mean scores differs between AI and supervisors. The variance of per-record mean scores was significantly larger for supervisors (Var=1.011, SD=1.005) than for AI (Var=0.262, SD=0.512) (Levene: F(1, 320)=73.203, p<.001; F-test: F(160, 160)=0.259, p<.001). The supervisor variance was about 3.9 times that of AI, suggesting that AI feedback quality is more consistent, whereas supervisor feedback quality is more variable (see @tbl-variance-tests-mean-score-by-record).
+
+```{r}
+#| label: fig-mean-score-per-record
+#| fig-cap: "Distribution of per-record mean scores by AI and supervisors"
+
+# Compute mean score per record_id for each provider
+mean_score_by_record <- tidy_data |>
+  filter(person %in% c("ai", "supervisor")) |>
+  group_by(record_id, person) |>
+  summarise(mean_score = mean(value, na.rm = TRUE), .groups = "drop")
+
+# Save the computed means
+mean_score_by_record |>
+  rio::export(here("result", "quantitative", "mean_score_by_record_person.csv"))
+
+# Plot overlapping histograms of per-record mean scores, colored by provider
+plot_mean_score_by_record <- ggplot(mean_score_by_record, aes(x = mean_score, fill = person)) +
+  geom_histogram(alpha = 0.6, position = "identity", bins = 30) +
+  scale_fill_manual(values = c("ai" = "blue", "supervisor" = "orange"), name = "Feedback Provider") +
+  labs(
+    x = "Per-record Mean Score",
+    y = "Frequency"
+  ) +
+  theme_minimal()
+
+plot_mean_score_by_record |>
+  ggsave(
+    filename = here("result", "quantitative", "fig_mean_score_per_record.svg"),
+    plot = _,
+    width = 10, height = 6
+  )
+
+plot_mean_score_by_record
+```
+
+```{r}
+#| label: tbl-variance-tests-mean-score-by-record
+#| tbl-cap: "Variance Comparison of per-record Mean Scores by AI and Supervisors"
+
+# Test if the variability (variance) of per-record mean scores differs between AI and supervisors
+
+# Packages
+pacman::p_load(car, dplyr, flextable, rio, here)
+
+# Prepare group vectors
+x <- mean_score_by_record |>
+  filter(person == "ai") |>
+  pull(mean_score) |>
+  as.numeric()
+y <- mean_score_by_record |>
+  filter(person == "supervisor") |>
+  pull(mean_score) |>
+  as.numeric()
+
+x <- x[is.finite(x)]
+y <- y[is.finite(y)]
+
+# Robust variance comparison: Levene (Brown–Forsythe, center = median)
+lev <- car::leveneTest(mean_score ~ person, data = mean_score_by_record, center = median)
+lev_tab <- as.data.frame(lev)
+lev_group <- lev_tab[1, , drop = FALSE]  # group row
+lev_df1 <- lev_group$Df
+lev_df2 <- lev_tab$Df[2]
+lev_F <- lev_group$`F value`
+lev_p <- lev_group$`Pr(>F)`
+
+# Classical F-test for ratio of variances
+vt <- var.test(x, y, alternative = "two.sided")
+
+# Summaries
+var_ai <- var(x, na.rm = TRUE)
+var_supervisor <- var(y, na.rm = TRUE)
+
+summary_df <- tibble::tibble(
+  Method = c(
+    "Levene (Brown–Forsythe, center=median)",
+    "F-test (variance ratio ai/supervisor)"
+  ),
+  Statistic = c(lev_F, unname(vt$statistic)),
+  df1 = c(lev_df1, unname(vt$parameter[1])),
+  df2 = c(lev_df2, unname(vt$parameter[2])),
+  p_value = c(lev_p, vt$p.value),
+  var_ai = var_ai,
+  var_supervisor = var_supervisor
+)
+
+# Save raw and formatted results
+rio::export(summary_df, here("result", "quantitative", "variance_tests_mean_score_by_record.csv"))
+
+display_df <- summary_df |>
+  transmute(
+    Test = Method,
+    `Statistic (F)` = round(Statistic, 3),
+    df1 = round(df1, 0),
+    df2 = round(df2, 0),
+    `p-value` = fmt_p(p_value),
+    `Var(AI)` = round(var_ai, 3),
+    `Var(Supervisor)` = round(var_supervisor, 3)
+  )
+
+rio::export(display_df, here("result", "quantitative", "variance_tests_mean_score_by_record_formatted.csv"))
+
+display_df |>
+  flextable::flextable() |>
+  flextable::set_caption("Variance comparison of per-record mean scores (AI vs Supervisor)") |>
+  flextable::align(align = "center", part = "all") |>
+  flextable::autofit()
+```
+
