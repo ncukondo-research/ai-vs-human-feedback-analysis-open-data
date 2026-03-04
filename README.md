@@ -1,6 +1,6 @@
 # Open Data: AI-Generated versus Human Supervisor Feedback on Medical Students' Clinical Clerkship Logs
 
-This repository contains the anonymized evaluation data and analysis code for:
+This repository contains the anonymized evaluation data, analysis code, and AI feedback generation source code for:
 
 > Kondo T, Donkers J, Nishigori H, Rovers S, Heeneman S. AI-generated versus human supervisor feedback on medical students' clinical clerkship logs: convergent mixed methods study. *JMIR Medical Education*. (under review)
 
@@ -24,6 +24,18 @@ analysis/
     extract_theme_analysis_data.r # Qualitative data extraction and coding
   integration/
     joint_display_analysis.md     # Mixed methods joint display analysis
+feedback-generation/              # AI feedback generation system (TypeScript)
+  api/
+    index.ts                      # Vercel serverless API entry point
+  lib/
+    chat-completion.ts            # OpenAI API wrapper
+    types.ts                      # Input/output schemas (Zod)
+  services/feedback-generation/
+    prompt-template.ts            # Prompt template for GPT-4o
+    feedback-generation.ts        # Core feedback generation logic
+    post-handler.ts               # Request handler
+  package.json                    # Dependencies
+  tsconfig.json                   # TypeScript configuration
 ```
 
 ## Data Description
@@ -57,6 +69,14 @@ Rubric-based evaluation scores comparing AI-generated and human supervisor feedb
 - **code_list_en.csv**: List of qualitative codes with all supporting evaluator comments grouped by code.
 - **theme_and_code_en.csv**: Hierarchical mapping of themes, sub-themes, and codes from thematic analysis.
 - **theme_table_en.csv**: Summary table of themes, sub-themes, and associated codes per feedback provider (AI/supervisor).
+
+## AI Feedback Generation System (`feedback-generation/`)
+
+The `feedback-generation/` directory contains the TypeScript source code for the serverless API (deployed on Vercel) that generated AI feedback in this study. The system used OpenAI's GPT-4o model to generate feedback on medical students' clinical clerkship logs.
+
+The prompt template (`services/feedback-generation/prompt-template.ts`) instructed the model to act as an AI supporting medical students' learning during clinical clerkship. The model evaluated daily logs against four criteria (daily recording consistency, specificity of experiences, specificity of learning, and specificity of future goals) and provided 2-3 actionable feedback items in a friendly, encouraging tone within 500 characters. The output was structured as JSON. When students had logs from previous weeks, prior log-feedback pairs were included in the conversation context to enable longitudinal feedback.
+
+To run the system locally, install dependencies with `bun install` and set the `AI_API_KEY` environment variable to a valid OpenAI API key, then start the development server with `bun run start`.
 
 ## Privacy and Ethics
 

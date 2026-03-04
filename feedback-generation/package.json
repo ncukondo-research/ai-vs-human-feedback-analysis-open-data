@@ -1,0 +1,22 @@
+{
+  "name": "feedback-generation",
+  "module": "api/index.ts",
+  "type": "module",
+  "scripts": {
+    "start": "vercel dev",
+    "build-vercel": "vercel build"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "vercel": "latest"
+  },
+  "peerDependencies": {
+    "typescript": "^5.0.0"
+  },
+  "dependencies": {
+    "@types/fs-extra": "^11.0.4",
+    "@vercel/node": "^3.0.25",
+    "fs-extra": "^11.2.0",
+    "zod": "^3.22.4"
+  }
+}
