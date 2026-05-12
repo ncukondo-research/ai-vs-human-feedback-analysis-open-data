@@ -691,9 +691,9 @@ cor_test_results_formatted |>
 
 ```
 
-## Consistency of Feedback Quality
+## Consistency of Rubric Scores
 
-To compare the consistency of feedback quality between AI and supervisors, we plotted the distribution of per-record mean scores (see @fig-mean-score-per-record). AI exhibited smaller score dispersion, suggesting higher consistency in feedback quality. We further tested whether the variance of per-record mean scores differs between AI and supervisors. The variance of per-record mean scores was significantly larger for supervisors (Var=1.011, SD=1.005) than for AI (Var=0.262, SD=0.512) (Levene: F(1, 320)=73.203, p<.001; F-test: F(160, 160)=0.259, p<.001). The supervisor variance was about 3.9 times that of AI, suggesting that AI feedback quality is more consistent, whereas supervisor feedback quality is more variable (see @tbl-variance-tests-mean-score-by-record).
+To compare the consistency of rubric scores between AI and supervisors, we plotted the distribution of per-record mean scores (see @fig-mean-score-per-record). AI exhibited smaller score dispersion, suggesting higher consistency in rubric scores. We further tested whether the variance of per-record mean scores differs between AI and supervisors. The variance of per-record mean scores was significantly larger for supervisors (Var=1.011, SD=1.005) than for AI (Var=0.262, SD=0.512) (Levene: F(1, 320)=73.203, p<.001; F-test: F(160, 160)=0.259, p<.001). The supervisor variance was about 3.9 times that of AI, suggesting that AI feedback received more consistent rubric scores, whereas supervisor feedback received more variable ones (see @tbl-variance-tests-mean-score-by-record).
 
 ```{r}
 #| label: fig-mean-score-per-record

@@ -15,10 +15,10 @@
         - AI feedback tended to be higher but not significant in CLMM.
     - Supportive
         - AI feedback tended to be higher but not significant.
-- Consistency of Feedback Quality
-    - AI feedback quality is more consistent, whereas supervisor feedback quality is more variable
+- Consistency of Rubric Scores
+    - AI feedback received more consistent rubric scores, whereas supervisor feedback received more variable ones
 - Correlation between feedback length and score
-    - While there was no correlation between length and quality in AI feedback, longer submissions received higher scores in supervisor feedback.
+    - While there was no correlation between length and rubric scores in AI feedback, longer submissions received higher scores in supervisor feedback.
 - Identification of Feedback Source
     - All evaluators were able to determine whether the provider of all feedback was an AI or a supervisor.
 
@@ -66,16 +66,16 @@
 - Type of Integration
     - Combination of quantitative and qualitative results leads to new insights
 - Integration
-    - Quantitative examination showed that while there is no correlation between length and quality in AI feedback, longer feedback received higher scores in supervisor feedback. Qualitative examination showed that AI feedback length enables specific examples to be provided, leading to clarity, while potentially resulting in verbose expressions with unclear priorities. Supervisor feedback brevity can lead to missing important elements but can be highly effective when concise and targeted. This suggests that AI excels at covering necessary elements, while supervisors excel at contextual prioritization. Combining these findings reveals that feedback requires sufficient length to include necessary items, while prioritization is also important, and longer is not necessarily better.
+    - Quantitative examination showed that while there is no correlation between length and rubric scores in AI feedback, longer feedback received higher scores in supervisor feedback. Qualitative examination showed that AI feedback length enables specific examples to be provided, leading to clarity, while potentially resulting in verbose expressions with unclear priorities. Supervisor feedback brevity can lead to missing important elements but can be highly effective when concise and targeted. This suggests that AI more systematically covers the elements specified by the rubric, while supervisors excel at contextual prioritization. Combining these findings reveals that feedback requires sufficient length to include necessary items, while prioritization is also important, and longer is not necessarily better.
 
 - Quantitative Analysis
-    - Consistency of Feedback Quality
+    - Consistency of Rubric Scores
 - Qualitative Analysis
     - Theme: "Adherence to the feedback criteria and structure"
 - Type of Integration
     - Quantitative results support qualitative findings
 - Integration
-    - The quantitative finding that AI feedback quality is more consistent is supported by the qualitative theme of "Adherence to the feedback criteria and structure," which describes AI feedback as closely following the rubric, leading to more uniform quality, whereas supervisors often deviate from the rubric, resulting in variable quality.
+    - The quantitative finding that AI feedback rubric scores are more consistent is supported by the qualitative theme of "Adherence to the feedback criteria and structure," which describes AI feedback as closely following the rubric, leading to more uniform rubric scores, whereas supervisors often deviate from the rubric, resulting in variable scores.
 
 - Quantitative Analysis
     - Comparison of Rubric Scores
