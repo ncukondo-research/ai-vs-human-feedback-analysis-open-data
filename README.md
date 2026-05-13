@@ -1,6 +1,6 @@
 # Open Data: AI-Generated versus Human Supervisor Feedback on Medical Students' Clinical Clerkship Logs
 
-[![DOI](https://zenodo.org/badge/1172495620.svg)](https://doi.org/10.5281/zenodo.18868578)
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.18868578.svg)](https://doi.org/10.5281/zenodo.18868578)
 
 This repository contains the anonymized evaluation data, analysis code, and AI feedback generation source code for:
 
